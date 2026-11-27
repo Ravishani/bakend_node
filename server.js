@@ -18,14 +18,13 @@ const contactRoutes = require("./routes/contactRoutes");
 const enquiryRoutes = require("./routes/enquiryRoutes");
 
 const visitorRoutes = require("./routes/visitorRoutes");
-const trackVisitor = require("./middleware/trackVisitor");
 
 const app = express();
 
 const PORT = process.env.PORT || 5000;
 
-// Reverse proxy configuration
 app.set("trust proxy", 1);
+
 const allowedOrigins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -118,10 +117,8 @@ app.get("/", (req, res) => {
     });
 });
 
-// Visitor Tracking Middleware
-app.use(trackVisitor);
-
 // Visitor Tracking Routes
+// Only frontend public page tracking requests are saved.
 app.use("/api/visitors", visitorRoutes);
 
 // Existing API Routes
@@ -170,9 +167,12 @@ const startServer = async () => {
             console.log("-----------------------------------");
             console.log("GlobalTechNext Backend Started");
             console.log(`Port: ${PORT}`);
-            console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+            console.log(
+                `Environment: ${process.env.NODE_ENV || "development"}`
+            );
             console.log("MongoDB: Connected Successfully");
-            console.log("Visitor Tracking: Enabled");
+            console.log("Page Visitor Tracking: Enabled");
+            console.log("API Request Tracking: Disabled");
             console.log("Allowed Origins:");
 
             finalAllowedOrigins.forEach((origin) => {

@@ -3,37 +3,97 @@ const VisitorLog = require("../models/VisitorLog");
 const UAParser = require("ua-parser-js");
 const geoip = require("geoip-lite");
 
+function safeString(value, maxLength = 500) {
+    if (typeof value !== "string") return "";
+    return value.trim().slice(0, maxLength);
+}
+
+function normalizeAttribution(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return null;
+    }
+
+    return {
+        source: safeString(data.source, 150) || "Direct",
+        sourceType: safeString(data.sourceType, 100) || "Direct",
+        medium: safeString(data.medium, 150) || "direct",
+        referrer: safeString(data.referrer, 2048),
+        utmSource: safeString(data.utmSource, 200),
+        utmMedium: safeString(data.utmMedium, 200),
+        utmCampaign: safeString(data.utmCampaign, 255),
+        utmTerm: safeString(data.utmTerm, 255),
+        utmContent: safeString(data.utmContent, 255),
+        capturedAt: data.capturedAt
+            ? new Date(data.capturedAt)
+            : new Date(),
+    };
+}
+
 function getDetails(req) {
-    const ip = req.ip || req.socket?.remoteAddress || "Unknown";
+    const rawIp = String(
+        req.ip || req.socket?.remoteAddress || "Unknown"
+    );
+
+    const ip = rawIp
+        .split(",")[0]
+        .trim()
+        .replace(/^::ffff:/, "");
+
     const userAgent = req.headers["user-agent"] || "";
     const result = new UAParser(userAgent).getResult();
-    const geo = geoip.lookup(ip.replace(/^::ffff:/, ""));
+
+    const geo = geoip.lookup(ip);
 
     return {
         ip,
         userAgent,
+
         browser: result.browser.name || "Unknown",
         browserVersion: result.browser.version || "",
+
         os: result.os.name || "Unknown",
-        device: result.device.model || result.device.vendor || "Unknown",
-        deviceType: result.device.type || "Desktop",
-        country: geo?.country || req.headers["cf-ipcountry"] || "Unknown",
+        osVersion: result.os.version || "",
+
+        device:
+            result.device.model ||
+            result.device.vendor ||
+            result.device.type ||
+            "Desktop",
+
+        deviceType: result.device.type || "desktop",
+
+        country:
+            geo?.country ||
+            req.headers["cf-ipcountry"] ||
+            "Unknown",
+
         region: geo?.region || "",
         city: geo?.city || "",
-        referrer: req.body.referrer || req.headers.referer || "",
+
+        referrer: safeString(
+            req.body.referrer || req.headers.referer || "",
+            2048
+        ),
+
         sessionId: req.body.sessionId || null,
     };
 }
 
+function getDateRange(days) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    return startDate;
+}
+
 exports.trackPage = async (req, res) => {
     try {
-        const { url, title, sessionId } = req.body;
+        const { url, sessionId } = req.body;
 
         if (
             typeof url !== "string" ||
             !url.startsWith("/") ||
-            url.length > 2048 ||
-            url.startsWith("//")
+            url.startsWith("//") ||
+            url.length > 2048
         ) {
             return res.status(400).json({
                 success: false,
@@ -53,23 +113,81 @@ exports.trackPage = async (req, res) => {
 
         const details = getDetails(req);
 
+        const firstTouch = normalizeAttribution(
+            req.body.firstTouch
+        );
+
+        const lastTouch = normalizeAttribution(
+            req.body.lastTouch
+        );
+
+        const trafficSource =
+            safeString(req.body.trafficSource, 150) ||
+            lastTouch?.source ||
+            "Direct";
+
+        const sourceType =
+            safeString(req.body.sourceType, 100) ||
+            lastTouch?.sourceType ||
+            "Direct";
+
+        const utmSource =
+            safeString(req.body.utmSource, 200) ||
+            lastTouch?.utmSource ||
+            "";
+
+        const utmMedium =
+            safeString(req.body.utmMedium, 200) ||
+            lastTouch?.utmMedium ||
+            "";
+
+        const utmCampaign =
+            safeString(req.body.utmCampaign, 255) ||
+            lastTouch?.utmCampaign ||
+            "";
+
+        const utmTerm =
+            safeString(req.body.utmTerm, 255) ||
+            lastTouch?.utmTerm ||
+            "";
+
+        const utmContent =
+            safeString(req.body.utmContent, 255) ||
+            lastTouch?.utmContent ||
+            "";
+
         await VisitorLog.create({
             eventType: "page",
+
             ...details,
+
             url,
             method: "GET",
             sessionId,
+
+            trafficSource,
+            sourceType,
+
+            utmSource,
+            utmMedium,
+            utmCampaign,
+            utmTerm,
+            utmContent,
+
+            firstTouch,
+            lastTouch,
+
             timestamp: new Date(),
         });
 
-        res.status(201).json({
+        return res.status(201).json({
             success: true,
             message: "Visit recorded",
         });
     } catch (error) {
         console.error("Page tracking error:", error.message);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Unable to record visit",
         });
@@ -83,40 +201,36 @@ exports.getAnalytics = async (req, res) => {
             365
         );
 
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - days);
+        const startDate = getDateRange(days);
 
         const match = {
             timestamp: { $gte: startDate },
+            eventType: "page",
         };
 
         const [
             pageViews,
-            apiHits,
             uniqueVisitors,
             countries,
             topPages,
             dailyVisits,
             recentVisitors,
+            trafficSources,
+            sourceTypes,
+            campaigns,
+            firstTouchSources,
+            lastTouchSources,
+            apiHits,
         ] = await Promise.all([
-            VisitorLog.countDocuments({
-                ...match,
-                eventType: "page",
-            }),
-
-            VisitorLog.countDocuments({
-                ...match,
-                eventType: "api",
-            }),
+            VisitorLog.countDocuments(match),
 
             VisitorLog.distinct("sessionId", {
                 ...match,
-                eventType: "page",
                 sessionId: { $ne: null },
             }),
 
             VisitorLog.aggregate([
-                { $match: { ...match, eventType: "page" } },
+                { $match: match },
                 {
                     $group: {
                         _id: "$country",
@@ -128,7 +242,7 @@ exports.getAnalytics = async (req, res) => {
             ]),
 
             VisitorLog.aggregate([
-                { $match: { ...match, eventType: "page" } },
+                { $match: match },
                 {
                     $group: {
                         _id: "$url",
@@ -140,7 +254,7 @@ exports.getAnalytics = async (req, res) => {
             ]),
 
             VisitorLog.aggregate([
-                { $match: { ...match, eventType: "page" } },
+                { $match: match },
                 {
                     $group: {
                         _id: {
@@ -159,25 +273,191 @@ exports.getAnalytics = async (req, res) => {
                 .sort({ timestamp: -1 })
                 .limit(10)
                 .lean(),
+
+            // Traffic Source Breakdown
+            VisitorLog.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: "$trafficSource",
+                        visits: { $sum: 1 },
+                        uniqueSessions: {
+                            $addToSet: "$sessionId",
+                        },
+                    },
+                },
+                {
+                    $project: {
+                        source: "$_id",
+                        visits: 1,
+                        uniqueVisitors: {
+                            $size: {
+                                $filter: {
+                                    input: "$uniqueSessions",
+                                    as: "session",
+                                    cond: {
+                                        $and: [
+                                            { $ne: ["$$session", null] },
+                                            { $ne: ["$$session", ""] },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                { $sort: { visits: -1 } },
+            ]),
+
+            // Source Type Breakdown
+            VisitorLog.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: "$sourceType",
+                        visits: { $sum: 1 },
+                        uniqueSessions: {
+                            $addToSet: "$sessionId",
+                        },
+                    },
+                },
+                {
+                    $project: {
+                        sourceType: "$_id",
+                        visits: 1,
+                        uniqueVisitors: {
+                            $size: {
+                                $filter: {
+                                    input: "$uniqueSessions",
+                                    as: "session",
+                                    cond: {
+                                        $and: [
+                                            { $ne: ["$$session", null] },
+                                            { $ne: ["$$session", ""] },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                { $sort: { visits: -1 } },
+            ]),
+
+            // UTM Campaign Breakdown
+            VisitorLog.aggregate([
+                {
+                    $match: {
+                        ...match,
+                        utmCampaign: { $nin: ["", null] },
+                    },
+                },
+                {
+                    $group: {
+                        _id: {
+                            campaign: "$utmCampaign",
+                            source: "$utmSource",
+                            medium: "$utmMedium",
+                        },
+                        visits: { $sum: 1 },
+                        uniqueSessions: {
+                            $addToSet: "$sessionId",
+                        },
+                    },
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        campaign: "$_id.campaign",
+                        source: "$_id.source",
+                        medium: "$_id.medium",
+                        visits: 1,
+                        uniqueVisitors: {
+                            $size: {
+                                $filter: {
+                                    input: "$uniqueSessions",
+                                    as: "session",
+                                    cond: {
+                                        $and: [
+                                            { $ne: ["$$session", null] },
+                                            { $ne: ["$$session", ""] },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                { $sort: { visits: -1 } },
+                { $limit: 20 },
+            ]),
+
+            // First Touch Attribution
+            VisitorLog.aggregate([
+                {
+                    $match: {
+                        ...match,
+                        "firstTouch.source": { $nin: ["", null] },
+                    },
+                },
+                {
+                    $group: {
+                        _id: "$firstTouch.source",
+                        visits: { $sum: 1 },
+                    },
+                },
+                { $sort: { visits: -1 } },
+            ]),
+
+            // Last Touch Attribution
+            VisitorLog.aggregate([
+                {
+                    $match: {
+                        ...match,
+                        "lastTouch.source": { $nin: ["", null] },
+                    },
+                },
+                {
+                    $group: {
+                        _id: "$lastTouch.source",
+                        visits: { $sum: 1 },
+                    },
+                },
+                { $sort: { visits: -1 } },
+            ]),
+
+            // Historical API logs only
+            VisitorLog.countDocuments({
+                timestamp: { $gte: startDate },
+                eventType: "api",
+            }),
         ]);
 
-        res.json({
+        return res.json({
             success: true,
             data: {
                 pageViews,
                 apiHits,
                 uniqueVisitors: uniqueVisitors.length,
                 countriesCount: countries.length,
+
                 countries,
                 topPages,
                 dailyVisits,
                 recentVisitors,
+
+                trafficSources,
+                sourceTypes,
+                campaigns,
+
+                firstTouchSources,
+                lastTouchSources,
             },
         });
     } catch (error) {
         console.error("Analytics error:", error.message);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Unable to load analytics",
         });
@@ -196,12 +476,9 @@ exports.getVisitors = async (req, res) => {
             100
         );
 
-        const filter = {};
-
-        const type = req.query.type;
-        if (["page", "api"].includes(type)) {
-            filter.eventType = type;
-        }
+        const filter = {
+            eventType: "page",
+        };
 
         if (req.query.search) {
             const search = String(req.query.search).slice(0, 200);
@@ -211,6 +488,18 @@ exports.getVisitors = async (req, res) => {
                 { url: { $regex: search, $options: "i" } },
                 { country: { $regex: search, $options: "i" } },
                 { city: { $regex: search, $options: "i" } },
+                {
+                    trafficSource: {
+                        $regex: search,
+                        $options: "i",
+                    },
+                },
+                {
+                    utmCampaign: {
+                        $regex: search,
+                        $options: "i",
+                    },
+                },
             ];
         }
 
@@ -220,10 +509,9 @@ exports.getVisitors = async (req, res) => {
                 365
             );
 
-            const start = new Date();
-            start.setDate(start.getDate() - days);
-
-            filter.timestamp = { $gte: start };
+            filter.timestamp = {
+                $gte: getDateRange(days),
+            };
         }
 
         const [visitors, total] = await Promise.all([
@@ -236,7 +524,7 @@ exports.getVisitors = async (req, res) => {
             VisitorLog.countDocuments(filter),
         ]);
 
-        res.json({
+        return res.json({
             success: true,
             data: visitors,
             pagination: {
@@ -249,7 +537,7 @@ exports.getVisitors = async (req, res) => {
     } catch (error) {
         console.error("Visitors list error:", error.message);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Unable to load visitors",
         });
@@ -276,12 +564,14 @@ exports.deleteVisitor = async (req, res) => {
             });
         }
 
-        res.json({
+        return res.json({
             success: true,
             message: "Visitor record deleted",
         });
     } catch (error) {
-        res.status(500).json({
+        console.error("Delete visitor error:", error.message);
+
+        return res.status(500).json({
             success: false,
             message: "Unable to delete visitor",
         });

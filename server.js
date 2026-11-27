@@ -15,10 +15,20 @@ const siteSettingRoutes = require("./routes/siteSettingRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
 const contactRoutes = require("./routes/contactRoutes");
+const enquiryRoutes = require("./routes/enquiryRoutes");
+
+const visitorRoutes = require("./routes/visitorRoutes");
+const trackVisitor = require("./middleware/trackVisitor");
 
 const app = express();
 
 const PORT = process.env.PORT || 5000;
+
+// Reverse proxy configuration
+app.set(
+    "trust proxy",
+    Number(process.env.TRUST_PROXY_HOPS ?? 0)
+);
 
 const allowedOrigins = [
     "http://localhost:3000",
@@ -82,6 +92,7 @@ app.use(
             "Content-Type",
             "Authorization",
             "Accept",
+            "X-Visitor-Session",
         ],
     })
 );
@@ -111,13 +122,20 @@ app.get("/", (req, res) => {
     });
 });
 
-// API Routes
+// Visitor Tracking Middleware
+app.use(trackVisitor);
+
+// Visitor Tracking Routes
+app.use("/api/visitors", visitorRoutes);
+
+// Existing API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/site-settings", siteSettingRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/contact", contactRoutes);
+app.use("/api/enquiries", enquiryRoutes);
 
 // 404 Handler
 app.use((req, res) => {
@@ -158,6 +176,7 @@ const startServer = async () => {
             console.log(`Port: ${PORT}`);
             console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
             console.log("MongoDB: Connected Successfully");
+            console.log("Visitor Tracking: Enabled");
             console.log("Allowed Origins:");
 
             finalAllowedOrigins.forEach((origin) => {

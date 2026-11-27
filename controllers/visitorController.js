@@ -194,6 +194,7 @@ exports.trackPage = async (req, res) => {
     }
 };
 
+
 exports.getAnalytics = async (req, res) => {
     try {
         const days = Math.min(
@@ -201,11 +202,27 @@ exports.getAnalytics = async (req, res) => {
             365
         );
 
-        const startDate = getDateRange(days);
+        const startDate = new Date(
+            Date.now() - (days * 24 * 60 * 60 * 1000)
+        );
 
         const match = {
             timestamp: { $gte: startDate },
             eventType: "page",
+        };
+
+        const hasUtm = {
+            $or: [
+                { $gt: [{ $strLenCP: { $ifNull: ["$utmSource", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$utmMedium", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$utmCampaign", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$utmTerm", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$utmContent", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$firstTouch.utmSource", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$lastTouch.utmSource", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$firstTouch.utmMedium", ""] } }, 0] },
+                { $gt: [{ $strLenCP: { $ifNull: ["$lastTouch.utmMedium", ""] } }, 0] },
+            ],
         };
 
         const [
@@ -221,6 +238,7 @@ exports.getAnalytics = async (req, res) => {
             firstTouchSources,
             lastTouchSources,
             apiHits,
+            utmResult,
         ] = await Promise.all([
             VisitorLog.countDocuments(match),
 
@@ -253,6 +271,7 @@ exports.getAnalytics = async (req, res) => {
                 { $limit: 10 },
             ]),
 
+            // Daily graph data
             VisitorLog.aggregate([
                 { $match: match },
                 {
@@ -261,9 +280,47 @@ exports.getAnalytics = async (req, res) => {
                             $dateToString: {
                                 format: "%Y-%m-%d",
                                 date: "$timestamp",
+                                timezone: "Asia/Kolkata",
                             },
                         },
-                        visits: { $sum: 1 },
+
+                        pageViews: { $sum: 1 },
+
+                        uniqueSessions: {
+                            $addToSet: "$sessionId",
+                        },
+
+                        utmVisits: {
+                            $sum: {
+                                $cond: [
+                                    hasUtm,
+                                    1,
+                                    0,
+                                ],
+                            },
+                        },
+                    },
+                },
+                {
+                    $project: {
+                        _id: 1,
+                        pageViews: 1,
+                        utmVisits: 1,
+
+                        uniqueVisitors: {
+                            $size: {
+                                $filter: {
+                                    input: "$uniqueSessions",
+                                    as: "session",
+                                    cond: {
+                                        $and: [
+                                            { $ne: ["$$session", null] },
+                                            { $ne: ["$$session", ""] },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
                 { $sort: { _id: 1 } },
@@ -274,16 +331,14 @@ exports.getAnalytics = async (req, res) => {
                 .limit(10)
                 .lean(),
 
-            // Traffic Source Breakdown
+            // Traffic Sources
             VisitorLog.aggregate([
                 { $match: match },
                 {
                     $group: {
                         _id: "$trafficSource",
                         visits: { $sum: 1 },
-                        uniqueSessions: {
-                            $addToSet: "$sessionId",
-                        },
+                        uniqueSessions: { $addToSet: "$sessionId" },
                     },
                 },
                 {
@@ -309,16 +364,14 @@ exports.getAnalytics = async (req, res) => {
                 { $sort: { visits: -1 } },
             ]),
 
-            // Source Type Breakdown
+            // Source Types
             VisitorLog.aggregate([
                 { $match: match },
                 {
                     $group: {
                         _id: "$sourceType",
                         visits: { $sum: 1 },
-                        uniqueSessions: {
-                            $addToSet: "$sessionId",
-                        },
+                        uniqueSessions: { $addToSet: "$sessionId" },
                     },
                 },
                 {
@@ -344,7 +397,7 @@ exports.getAnalytics = async (req, res) => {
                 { $sort: { visits: -1 } },
             ]),
 
-            // UTM Campaign Breakdown
+            // UTM Campaigns
             VisitorLog.aggregate([
                 {
                     $match: {
@@ -360,9 +413,7 @@ exports.getAnalytics = async (req, res) => {
                             medium: "$utmMedium",
                         },
                         visits: { $sum: 1 },
-                        uniqueSessions: {
-                            $addToSet: "$sessionId",
-                        },
+                        uniqueSessions: { $addToSet: "$sessionId" },
                     },
                 },
                 {
@@ -392,7 +443,7 @@ exports.getAnalytics = async (req, res) => {
                 { $limit: 20 },
             ]),
 
-            // First Touch Attribution
+            // First Touch
             VisitorLog.aggregate([
                 {
                     $match: {
@@ -409,7 +460,7 @@ exports.getAnalytics = async (req, res) => {
                 { $sort: { visits: -1 } },
             ]),
 
-            // Last Touch Attribution
+            // Last Touch
             VisitorLog.aggregate([
                 {
                     $match: {
@@ -426,36 +477,44 @@ exports.getAnalytics = async (req, res) => {
                 { $sort: { visits: -1 } },
             ]),
 
-            // Historical API logs only
             VisitorLog.countDocuments({
                 timestamp: { $gte: startDate },
                 eventType: "api",
             }),
+
+            // Total UTM Visits
+            VisitorLog.aggregate([
+                { $match: match },
+                { $match: { $expr: hasUtm } },
+                { $count: "total" },
+            ]),
         ]);
+
+        const utmVisits = utmResult[0]?.total || 0;
 
         return res.json({
             success: true,
             data: {
                 pageViews,
-                apiHits,
                 uniqueVisitors: uniqueVisitors.length,
                 countriesCount: countries.length,
+                utmVisits,
 
+                apiHits,
                 countries,
                 topPages,
                 dailyVisits,
                 recentVisitors,
-
                 trafficSources,
                 sourceTypes,
                 campaigns,
-
                 firstTouchSources,
                 lastTouchSources,
             },
         });
+
     } catch (error) {
-        console.error("Analytics error:", error.message);
+        console.error("Analytics error:", error);
 
         return res.status(500).json({
             success: false,
@@ -463,6 +522,7 @@ exports.getAnalytics = async (req, res) => {
         });
     }
 };
+
 
 exports.getVisitors = async (req, res) => {
     try {

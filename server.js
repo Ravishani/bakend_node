@@ -20,6 +20,22 @@ const app = express();
 
 const PORT = process.env.PORT || 5000;
 
+const allowedOrigins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://globaltechnext.com",
+    "https://www.globaltechnext.com",
+];
+
+const configuredOrigins = (process.env.FRONTEND_URL || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+
+const finalAllowedOrigins = [
+    ...new Set([...allowedOrigins, ...configuredOrigins]),
+];
+
 const legacyUploadsDirectory = path.join(__dirname, "uploads");
 
 const publicUploadsDirectory = path.join(
@@ -41,18 +57,40 @@ serviceDirectories.forEach((directory) => {
     fs.mkdirSync(directory, { recursive: true });
 });
 
+// CORS Configuration
 app.use(
     cors({
-        origin: process.env.FRONTEND_URL || "http://localhost:3000",
+        origin: (origin, callback) => {
+            if (!origin || finalAllowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            console.error("Blocked CORS Origin:", origin);
+
+            return callback(new Error("Origin not allowed by CORS"));
+        },
         credentials: true,
-        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+        methods: [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS",
+        ],
+        allowedHeaders: [
+            "Content-Type",
+            "Authorization",
+            "Accept",
+        ],
     })
 );
 
+// Body Parsers
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+// Static Uploads
 app.use(
     "/uploads",
     express.static(legacyUploadsDirectory)
@@ -63,20 +101,25 @@ app.use(
     express.static(publicUploadsDirectory)
 );
 
+// Backend Health Check
 app.get("/", (req, res) => {
     return res.status(200).json({
         success: true,
         message: "GlobalTechNext Backend API Running Successfully",
         status: "Active",
+        environment: process.env.NODE_ENV || "development",
     });
 });
 
+// API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/site-settings", siteSettingRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/contact", contactRoutes);
+
+// 404 Handler
 app.use((req, res) => {
     return res.status(404).json({
         success: false,
@@ -84,6 +127,7 @@ app.use((req, res) => {
     });
 });
 
+// Global Error Handler
 app.use((error, req, res, next) => {
     console.error("API Error:", error);
 
@@ -103,19 +147,23 @@ app.use((error, req, res, next) => {
     });
 });
 
+// Start Server
 const startServer = async () => {
     try {
         await connectDB();
 
-        app.listen(PORT, () => {
+        app.listen(PORT, "0.0.0.0", () => {
             console.log("-----------------------------------");
             console.log("GlobalTechNext Backend Started");
-            console.log(`Server: http://localhost:${PORT}`);
+            console.log(`Port: ${PORT}`);
+            console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
             console.log("MongoDB: Connected Successfully");
-            console.log(`Legacy Uploads: http://localhost:${PORT}/uploads`);
-            console.log("Service Main Images: /uploads/services/image");
-            console.log("Service Banner Images: /uploads/services/banner");
-            console.log("Service OG Images: /uploads/services/og");
+            console.log("Allowed Origins:");
+
+            finalAllowedOrigins.forEach((origin) => {
+                console.log(`- ${origin}`);
+            });
+
             console.log("-----------------------------------");
         });
     } catch (error) {

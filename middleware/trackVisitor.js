@@ -4,9 +4,15 @@ const geoip = require("geoip-lite");
 const UAParser = require("ua-parser-js");
 
 const trackVisitor = (req, res, next) => {
+    const url = req.originalUrl.split("?")[0].toLowerCase();
+
     if (
-        !req.originalUrl.startsWith("/api/") ||
-        req.originalUrl.startsWith("/api/visitors")
+        !url.startsWith("/api/") ||
+        url === "/api/visitors" ||
+        url.startsWith("/api/visitors/") ||
+        url.startsWith("/api/admin/") ||
+        url.startsWith("/api/auth/") ||
+        url.startsWith("/api/users/")
     ) {
         return next();
     }
@@ -15,12 +21,8 @@ const trackVisitor = (req, res, next) => {
 
     res.on("finish", async () => {
         try {
-            const forwardedFor = req.headers["x-forwarded-for"];
-
             const ip = String(
-                req.ip ||
-                req.socket?.remoteAddress ||
-                ""
+                req.ip || req.socket?.remoteAddress || "Unknown"
             )
                 .split(",")[0]
                 .trim()
@@ -28,16 +30,12 @@ const trackVisitor = (req, res, next) => {
 
             const userAgent = req.headers["user-agent"] || "";
             const parser = new UAParser(userAgent);
+
             const browser = parser.getBrowser();
             const os = parser.getOS();
             const device = parser.getDevice();
 
             const geo = geoip.lookup(ip);
-
-            const sessionId =
-                req.headers["x-visitor-session"] ||
-                req.body?.sessionId ||
-                null;
 
             await VisitorLog.create({
                 eventType: "api",
@@ -49,6 +47,7 @@ const trackVisitor = (req, res, next) => {
 
                 browser: browser.name || "Unknown",
                 browserVersion: browser.version || "",
+
                 os: os.name || "Unknown",
                 osVersion: os.version || "",
 
@@ -62,7 +61,10 @@ const trackVisitor = (req, res, next) => {
                 region: geo?.region || "",
                 city: geo?.city || "",
 
-                sessionId,
+                sessionId:
+                    req.headers["x-visitor-session"] ||
+                    req.body?.sessionId ||
+                    null,
             });
         } catch (error) {
             console.error("Visitor Tracking Error:", error.message);
